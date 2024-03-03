@@ -4,6 +4,7 @@ use serde::Deserialize;
 pub struct LoginForm {
     pub email: String,
     pub password: String,
+    pub csrf_token: String,
 }
 
 #[derive(Deserialize)]

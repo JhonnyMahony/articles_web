@@ -4,7 +4,9 @@
 {% block content %}
     <h2>Login Form</h2>
     <form action="/login" method="POST">
-        <div>
+      {% include 'includes/csrf.html' %}
+    
+      <div>
             <label for="email">Username:</label>
             <input type="text" id="email" name="email" required>
         </div>

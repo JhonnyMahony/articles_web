@@ -1,7 +1,7 @@
 use actix_files as files;
 use actix_web::{web, App, HttpServer, Responder};
 use tera::{Context, Tera};
-use actix_session::CookieSession;
+use actix_session::{CookieSession, Session};
 use dotenv::dotenv;
 use std::env;
 use diesel::pg::PgConnection;
@@ -18,10 +18,16 @@ pub fn establish_connection() -> PgConnection {
 }
 
 
-async fn home(tera: web::Data<Tera>) -> impl Responder {
+async fn home(session: Session,tera: web::Data<Tera>) -> impl Responder {
     let mut context = Context::new();
     context.insert("title", "My Actix App");
     context.insert("message", "Hello from Actix with context!");
+    
+    let user_id: Option<String> = session.get("user_id").unwrap_or(None);
+    match user_id {
+        Some(id) => println!("{}", id),
+        None => println!("User ID not found"),
+    }
 
     let rendered = tera.render("home.html", &context).unwrap();
     actix_web::HttpResponse::Ok()

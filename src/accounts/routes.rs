@@ -11,7 +11,17 @@ pub fn config(cfg: &mut web::ServiceConfig) {
         .service(
             web::resource("/register")
                 .route(web::get().to(handlers::register_get))
-                .route(web::post().to(handlers::register_post)), 
+                .route(web::post().to(handlers::register_post)),
+        )
+        .service(
+            web::resource("/dashboard")
+                .route(web::get().to(handlers::dashboard_get))
+        )
+        .service(
+            web::resource("/logout")
+                .route(web::get().to(handlers::logout))
         );
+
+
 }
 
