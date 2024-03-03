@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+
+{% block content %}
+    <h2>Register Form</h2>
+    <form action="/register" method="POST">
+        <div>
+            <label for="email">Username:</label>
+            <input type="text" id="email" name="email" required>
+        </div>
+        <div>
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+         <div>
+            <label for="confirm_password">Password:</label>
+            <input type="password" id="confirm_password" name="confirm_password" required>
+        </div>
+        
+        <button type="submit">register</button>
+    </form>
+{% endblock content %}
+
