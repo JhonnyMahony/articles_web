@@ -20,6 +20,9 @@ pub fn config(cfg: &mut web::ServiceConfig) {
         .service(
             web::resource("/logout")
                 .route(web::get().to(handlers::logout))
+        )
+        .service(web::resource("/verify/{token}")
+            .route(web::get().to(handlers::verify_account))
         );
 
 

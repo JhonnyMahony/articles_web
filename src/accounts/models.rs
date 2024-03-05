@@ -1,5 +1,6 @@
 use diesel::prelude::*;
 use crate::accounts::schema::accounts;
+use chrono::NaiveDateTime;
 
 #[derive(Queryable, Selectable)]
 #[diesel(table_name = crate::accounts::schema::accounts)]
@@ -8,7 +9,8 @@ pub struct Account {
     pub id: i32,
     pub email: String,
     pub password: String,
-    pub created_at: bool,
+    pub created_at: NaiveDateTime,
+    pub is_verified: bool,
 }
 
 
