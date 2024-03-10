@@ -1,5 +1,5 @@
 use actix_files as files;
-use actix_web::{web, App, HttpServer, Responder};
+use actix_web::{web, App, HttpServer, Responder, cookie::SameSite};
 use tera::{Context, Tera};
 use actix_session::{CookieSession, Session};
 use dotenv::dotenv;
@@ -47,6 +47,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(CookieSession::signed(&[0; 32]) // Use a secret key for signed cookies
                     .secure(false) // Set to true in production over HTTPS
+                    .same_site(SameSite::Strict)
                     .max_age(24 * 60 * 60),)
             .app_data(web::Data::new(tera.clone()))
             .route("/", web::get().to(home))

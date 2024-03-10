@@ -3,6 +3,7 @@
 
 {% block content %}
     <h2>Login Form</h2>
+    {% include 'includes/alerts.html' %}
     <form action="/login" method="POST">
       {% include 'includes/csrf.html' %}
     

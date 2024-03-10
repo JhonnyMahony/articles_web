@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<title>{{ title }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            width: 80%;
+            margin: auto;
+            overflow: hidden;
+        }
+        img.profile-photo {
+            max-width: 200px;
+            border-radius: 50%;
+        }
+        .profile-info {
+            margin-top: 20px;
+        }
+    </style>
+
+<div class="container">
+    <!-- Profile Image -->
+  <img src="{{photo}}" alt="Profile Photo" class="profile-photo">
+    
+    <!-- Profile Information -->
+    <div class="profile-info">
+    <h1>name: {{ name }} surname: {{ surname }}</h1>
+        <p>Here is a brief introduction or biography. You can talk about your interests, what you do, or any other information you'd like to share.</p>
+        
+        <h2>Contact Information</h2>
+        <p>Email: your.email@example.com</p>
+        <p>{{phone_number}}</p>
+        
+        <h2>Skills</h2>
+        <ul>
+            <li>Skill 1</li>
+            <li>Skill 2</li>
+            <li>Skill 3</li>
+            <li>Etc...</li>
+        </ul>
+    </div>
+</div>
+
+{% endblock content %}

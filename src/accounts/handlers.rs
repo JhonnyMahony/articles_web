@@ -1,18 +1,48 @@
-use crate::accounts::forms::{Claims, LoginForm, RegisterForm};
+use crate::accounts::forms::{AlertMessage, Claims, LoginForm, RegisterForm};
 use actix_session::Session;
-use actix_web::cookie::time::format_description::parse;
-use actix_web::{http, web, HttpRequest, HttpResponse, Responder};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation, errors::ErrorKind};
+use actix_web::{http, web, HttpResponse, Responder};
+use jsonwebtoken::{
+    decode, encode, errors::ErrorKind, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+};
 use tera::{Context, Tera};
 // diesel
-use crate::accounts::models::{Account, NewAccount};
+use crate::accounts::models::{Account, NewAccount, NewUserProfile, UserProfile};
 use crate::establish_connection;
 use bcrypt::{hash, verify, DEFAULT_COST};
-use diesel::{prelude::*, result};
+use diesel::prelude::*;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{message::Mailbox, Message, SmtpTransport, Transport};
 use uuid::Uuid;
 // Assuming `Model` is the correct entity from your `models.rs`
+use actix_multipart::Multipart;
+use futures::{StreamExt, TryStreamExt};
+use sanitize_filename;
+use std::io::Write;
+use validator::validate_email;
+
+async fn alert_message(
+    session: Session,
+    location: &str,
+    level: &str,
+    content: &str,
+) -> HttpResponse {
+    let alert_message = AlertMessage::new(level, content);
+    let _ = session.insert("alert_message", alert_message);
+    return HttpResponse::Found()
+        .append_header((http::header::LOCATION, location))
+        .finish();
+}
+
+fn account_exists(connection: &mut PgConnection, account_email: &str) -> bool {
+    use crate::accounts::schema::accounts::dsl::*;
+    match accounts
+        .filter(email.eq(account_email))
+        .first::<Account>(connection)
+    {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
 
 pub async fn verify_account(token: web::Path<String>) -> impl Responder {
     let connection = &mut establish_connection();
@@ -27,7 +57,7 @@ pub async fn verify_account(token: web::Path<String>) -> impl Responder {
         Ok(c) => c,
         Err(err) => match *err.kind() {
             ErrorKind::ExpiredSignature => {
-                 let mut validation = Validation::default();
+                let mut validation = Validation::default();
                 validation.validate_exp = false; // Disable expiration validation
                 if let Ok(token_data) = decode::<Claims>(
                     &token,
@@ -41,14 +71,17 @@ pub async fn verify_account(token: web::Path<String>) -> impl Responder {
                         // Resend the verification email
                         if let Err(e) = send_verification_email(&user_email, &user_id.to_string()) {
                             println!("Failed to resend verification email: {:?}", e);
-                            return HttpResponse::InternalServerError().body("Failed to resend verification email");
+                            return HttpResponse::InternalServerError()
+                                .body("Failed to resend verification email");
                         }
                     }
-                    return HttpResponse::Ok().body("Verification link has expired. A new verification email has been sent.");
+                    return HttpResponse::Ok().body(
+                        "Verification link has expired. A new verification email has been sent.",
+                    );
                 } else {
                     return HttpResponse::Unauthorized().body("Invalid token");
                 }
-            },
+            }
             _ => return HttpResponse::Unauthorized().body("Invalid token"),
         },
     };
@@ -57,8 +90,6 @@ pub async fn verify_account(token: web::Path<String>) -> impl Responder {
     let _ = diesel::update(accounts.find(account_id))
         .set(is_verified.eq(true))
         .execute(&mut *connection);
-    // Use `user_id` to find the user in your database and mark them as verified
-    // Database interaction logic goes here...
 
     HttpResponse::Ok().body("Account verified")
 }
@@ -114,12 +145,15 @@ async fn submit_form(session: &Session, csrf_token: &str) -> bool {
 
 pub async fn login_post(session: Session, form: web::Form<LoginForm>) -> impl Responder {
     use crate::accounts::schema::accounts::dsl::*;
-    // Here you can insert your authentication logic
     let connection = &mut establish_connection();
 
     let is_form_valid = submit_form(&session, &form.csrf_token).await;
     if !is_form_valid {
-        return HttpResponse::Ok().body("uncorrect csrf");
+        let alert_message = AlertMessage::new("error", "Csrf token uncorrect");
+        let _ = session.insert("alert_message", alert_message);
+        return HttpResponse::Found()
+            .append_header((http::header::LOCATION, "/login"))
+            .finish();
     }
     let results = accounts
         .filter(email.eq(&form.email))
@@ -129,44 +163,49 @@ pub async fn login_post(session: Session, form: web::Form<LoginForm>) -> impl Re
         .expect("Error loading posts");
 
     if results.is_empty() {
-        return HttpResponse::Ok().body("User not found.");
+        let alert_message = AlertMessage::new("error", "Account doesnt exist");
+        let _ = session.insert("alert_message", alert_message);
+        return HttpResponse::Found()
+            .append_header((http::header::LOCATION, "/login"))
+            .finish();
     }
     let user_id = &results[0].id;
     let is_verifyde = &results[0].is_verified;
     println!("{}", is_verifyde);
-    if let Err(e) = session.insert("user_id", &user_id.to_string()) {
+    if let Err(e) = session.insert("account_id", user_id) {
         // Handle the error, e.g., by logging or returning an error response
         println!("Failed to insert user_id into session: {:?}", e);
     }
     match verify(&form.password, &results[0].password) {
         Ok(is_password_correct) => {
             if is_password_correct {
-                // If the password is correct, redirect to the dashboard
                 return HttpResponse::Found()
                     .append_header((http::header::LOCATION, "/dashboard"))
                     .finish();
             } else {
-                // If the password is incorrect, inform the user
-                return HttpResponse::Ok().body("Incorrect password");
+                let alert_message = AlertMessage::new("error", "incorrect password or email");
+                let _ = session.insert("alert_message", alert_message);
+                return HttpResponse::Found()
+                    .append_header((http::header::LOCATION, "/login"))
+                    .finish();
             }
         }
         Err(_) => {
-            // Handle the error case, e.g., logging the error or informing the user
             return HttpResponse::InternalServerError()
                 .body("An error occurred during password verification");
         }
     }
 }
 
-pub async fn login_get(
-    request: HttpRequest,
-    session: Session,
-    tera: web::Data<Tera>,
-) -> impl Responder {
+pub async fn login_get(session: Session, tera: web::Data<Tera>) -> impl Responder {
+    let mut context = Context::new();
+    if let Some(alert_message) = session.get::<AlertMessage>("alert_message").unwrap() {
+        context.insert("alert_message", &alert_message);
+        session.remove("alert_message");
+    }
     let csrf_token = Uuid::new_v4().to_string();
     let _ = session.insert("csrf_token", &csrf_token);
 
-    let mut context = Context::new();
     context.insert("title", "you on login page");
     context.insert("csrf_token", &csrf_token);
 
@@ -176,8 +215,15 @@ pub async fn login_get(
         .body(rendered)
 }
 
-pub async fn register_get(tera: web::Data<Tera>) -> impl Responder {
+pub async fn register_get(session: Session, tera: web::Data<Tera>) -> impl Responder {
     let mut context = Context::new();
+    if let Some(alert_message) = session.get::<AlertMessage>("alert_message").unwrap() {
+        context.insert("alert_message", &alert_message);
+        session.remove("alert_message");
+    }
+    let csrf_token = Uuid::new_v4().to_string();
+    let _ = session.insert("csrf_token", &csrf_token);
+    context.insert("csrf_token", &csrf_token);
     context.insert("title", "you on regoster page");
     let rendered = tera.render("accounts/register.html", &context).unwrap();
     actix_web::HttpResponse::Ok()
@@ -185,19 +231,44 @@ pub async fn register_get(tera: web::Data<Tera>) -> impl Responder {
         .body(rendered)
 }
 
-pub async fn register_post(form: web::Form<RegisterForm>) -> impl Responder {
+pub async fn register_post(session: Session, form: web::Form<RegisterForm>) -> impl Responder {
+    // Database conection
     let connection = &mut establish_connection();
-
-    if form.password != form.confirm_password {
-        return HttpResponse::Ok().body("password doesnt match");
+    // Csrf validation
+    let is_form_valid = submit_form(&session, &form.csrf_token).await;
+    if !is_form_valid {
+        return alert_message(session, "/register", "error", "Invalid csrf token").await;
     }
-
-    let email_1 = &form.email;
-    let password_1 = &form.password;
-
-    let account = create_account(connection, &email_1, &password_1);
-    println!("\nSaved draft {} with id {}", email_1, account.id);
-    if let Err(e) = send_verification_email(&email_1, &account.id.to_string()) {
+    // Form validation
+    if !validate_email(&form.email) {
+        return alert_message(session, "/register", "error", "Invalid format of  email").await;
+    } else if account_exists(connection, &form.email) {
+        return alert_message(session, "/register", "error", "Account exist").await;
+    } else if form.password.to_lowercase() == form.password {
+        return alert_message(
+            session,
+            "/register",
+            "error",
+            "password need at least 1 upper case letter",
+        )
+        .await;
+    } else if form.password.len() < 8 {
+        return alert_message(
+            session,
+            "/register",
+            "error",
+            "Password must be at least 8 characters long",
+        )
+        .await;
+    } else if form.password != form.confirm_password {
+        return alert_message(session, "/login", "error", "Password doesnt match").await;
+    }
+    // Account creating and verifying
+    let email = &form.email;
+    let account = create_account(connection, &form.email, &form.password);
+    create_user_profile(connection, &account);
+    println!("\nSaved draft {} with id {}", email, account.id);
+    if let Err(e) = send_verification_email(&email, &account.id.to_string()) {
         println!("Failed to send verification email: {}", e);
         return HttpResponse::InternalServerError().finish();
     }
@@ -225,6 +296,7 @@ pub async fn dashboard_get(session: Session, tera: web::Data<Tera>) -> impl Resp
         .content_type("text/html")
         .body(rendered)
 }
+
 pub fn create_account(conn: &mut PgConnection, email: &str, password: &str) -> Account {
     use crate::accounts::schema::accounts;
     let hashed_password = hash(password, DEFAULT_COST).expect("Failed to hash password");
@@ -239,14 +311,131 @@ pub fn create_account(conn: &mut PgConnection, email: &str, password: &str) -> A
         .get_result(conn)
         .expect("Error saving new post")
 }
+
+pub fn create_user_profile(conn: &mut PgConnection, account: &Account) {
+    use crate::accounts::schema::user_profiles;
+    let default_profile_image = "./media/accounts/profile_images/user-thumbnail.png";
+    let new_user_profile = NewUserProfile {
+        account_id: account.id, // Use the ID of the newly created account
+        // Set default or empty values for the user profile fields
+        // These can be updated later by the user
+        name: "",
+        surname: "",
+        phone_number: "",
+        photo: Some(&default_profile_image),
+    };
+
+    diesel::insert_into(user_profiles::table)
+        .values(&new_user_profile)
+        .execute(conn)
+        .expect("Error saving new user profile");
+}
+
 pub async fn get_user_email(user_id: i32) -> Result<String, diesel::result::Error> {
     use crate::accounts::schema::accounts::dsl::*;
     let mut connection = establish_connection(); // This function should establish a database connection
-    
+
     let result = accounts
         .find(user_id)
         .select(email) // Assuming `email` is a field in your accounts table
         .first::<String>(&mut connection); // This tries to fetch the first result
 
     result
+}
+
+pub async fn user_profile_create(session: Session, mut payload: Multipart) -> impl Responder {
+    let mut conn = establish_connection();
+
+    let account_id_result = session.get::<i32>("user_id");
+    let account_id: i32 = match account_id_result {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return HttpResponse::Unauthorized().body("User is not logged in or session is expired")
+        }
+        Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
+    };
+
+    let mut user_profile = crate::accounts::schema::user_profiles::table
+        .filter(crate::accounts::schema::user_profiles::account_id.eq(account_id))
+        .first::<UserProfile>(&mut conn)
+        .expect("Error loading user profile");
+
+    // Iterate over multipart form data
+    while let Ok(Some(mut field)) = payload.try_next().await {
+        let content_disposition = field.content_disposition();
+        let field_name = content_disposition.get_name().unwrap_or_default();
+
+        match field_name {
+            "name" => {
+                let data = field.next().await.unwrap().unwrap();
+                user_profile.name = String::from_utf8(data.to_vec()).unwrap();
+            }
+            "surname" => {
+                let data = field.next().await.unwrap().unwrap();
+                user_profile.surname = String::from_utf8(data.to_vec()).unwrap();
+            }
+            "phone_number" => {
+                let data = field.next().await.unwrap().unwrap();
+                user_profile.phone_number = String::from_utf8(data.to_vec()).unwrap();
+            }
+            "photo" => {
+                let filename =
+                    sanitize_filename::sanitize(content_disposition.get_filename().unwrap());
+                let photo_path = format!("./media/accounts/profile_images/{}", filename);
+                let photo_path_clone = photo_path.clone();
+                user_profile.photo = photo_path;
+                let mut f = web::block(move || std::fs::File::create(&photo_path_clone))
+                    .await
+                    .unwrap();
+
+                while let Some(chunk) = field.next().await {
+                    let data = chunk.unwrap();
+                    f = web::block(move || {
+                        let mut file = f.expect("Failed to open file");
+                        file.write_all(&data)?;
+                        Ok(file) // Directly return the `File` wrapped in an `Ok`
+                    })
+                    .await
+                    .expect("error");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = diesel::update(crate::accounts::schema::user_profiles::table.find(user_profile.id))
+        .set(&user_profile)
+        .execute(&mut conn)
+        .expect("Error updating user profile");
+
+    HttpResponse::Ok()
+        .content_type("text/plain")
+        .body("User profile created successfully!")
+}
+
+pub async fn profile(session: Session, tera: web::Data<Tera>) -> impl Responder {
+    let mut context = Context::new();
+    let account_id_result = session.get::<i32>("user_id");
+    let account_id: i32 = match account_id_result {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return HttpResponse::Unauthorized().body("User is not logged in or session is expired")
+        }
+        Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
+    };
+    let mut conn = establish_connection();
+    let user_profile = crate::accounts::schema::user_profiles::table
+        .filter(crate::accounts::schema::user_profiles::account_id.eq(account_id))
+        .first::<UserProfile>(&mut conn)
+        .expect("Error loading user profile");
+    context.insert("name", &user_profile.name);
+    context.insert("surname", &user_profile.surname);
+    context.insert("phone_number", &user_profile.phone_number);
+    context.insert("photo", &user_profile.photo);
+    context.insert("title", "profile page");
+
+    let rendered = tera.render("accounts/profile.html", &context).unwrap();
+    actix_web::HttpResponse::Ok()
+        .content_type("text/html")
+        .body(rendered)
 }

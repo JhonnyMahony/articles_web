@@ -21,9 +21,16 @@ pub fn config(cfg: &mut web::ServiceConfig) {
             web::resource("/logout")
                 .route(web::get().to(handlers::logout))
         )
+        .service(web::resource("/create_user_profile")
+            .route(web::post().to(handlers::user_profile_create))
+        )
+        .service(web::resource("/profile")
+            .route(web::get().to(handlers::profile))
+        )
         .service(web::resource("/verify/{token}")
             .route(web::get().to(handlers::verify_account))
         );
+        
 
 
 }

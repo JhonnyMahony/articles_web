@@ -2,8 +2,10 @@
 
 
 {% block content %}
+  {% include "includes/alerts.html" %}
     <h2>Register Form</h2>
     <form action="/register" method="POST">
+      {% include 'includes/csrf.html' %}
         <div>
             <label for="email">Username:</label>
             <input type="text" id="email" name="email" required>
