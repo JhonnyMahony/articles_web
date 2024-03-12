@@ -8,6 +8,7 @@ use diesel::pg::PgConnection;
 use diesel::prelude::*;
 //modules
 mod accounts;
+mod admin;
 
 pub fn establish_connection() -> PgConnection {
     dotenv().ok();
@@ -23,7 +24,7 @@ async fn home(session: Session,tera: web::Data<Tera>) -> impl Responder {
     context.insert("title", "My Actix App");
     context.insert("message", "Hello from Actix with context!");
     
-    let user_id: Option<String> = session.get("user_id").unwrap_or(None);
+    let user_id: Option<i32> = session.get("account_id").unwrap_or(None);
     match user_id {
         Some(id) => println!("{}", id),
         None => println!("User ID not found"),

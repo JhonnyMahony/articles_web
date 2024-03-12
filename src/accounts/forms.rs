@@ -15,6 +15,16 @@ pub struct RegisterForm{
     pub csrf_token: String,
 }
 
+#[derive(Deserialize)]
+pub struct FogotPasswordForm{
+    pub email: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResetPasswordForm{
+    pub password: String,
+    pub confirm_password: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {

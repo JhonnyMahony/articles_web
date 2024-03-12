@@ -1,4 +1,4 @@
-use actix_web::web::{self};
+use actix_web::web;
 use crate::accounts::handlers;
 
 pub fn config(cfg: &mut web::ServiceConfig) {
@@ -21,8 +21,18 @@ pub fn config(cfg: &mut web::ServiceConfig) {
             web::resource("/logout")
                 .route(web::get().to(handlers::logout))
         )
-        .service(web::resource("/create_user_profile")
-            .route(web::post().to(handlers::user_profile_create))
+        .service(web::resource("/change_profile")
+            .route(web::get().to(handlers::change_profile_get))
+            .route(web::post().to(handlers::change_profile_post))
+        )
+        .service(web::resource("/forgot_password")
+            .route(web::get().to(handlers::forgot_password_get))
+            .route(web::post().to(handlers::forgot_password_post))
+        
+        )
+        .service(web::resource("/reset_password/{token}")
+            .route(web::get().to(handlers::reset_password_get))
+            .route(web::post().to(handlers::reset_password_post))
         )
         .service(web::resource("/profile")
             .route(web::get().to(handlers::profile))
@@ -30,8 +40,5 @@ pub fn config(cfg: &mut web::ServiceConfig) {
         .service(web::resource("/verify/{token}")
             .route(web::get().to(handlers::verify_account))
         );
-        
-
-
 }
 

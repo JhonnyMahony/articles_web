@@ -1,0 +1,20 @@
+{%  extends 'base.html' %}
+
+{% block content %}
+ <h2>Change profile</h2>
+
+<form action="/change_profile" method="post" enctype="multipart/form-data">
+    <h3>User Profile</h3>
+    <label for="name">Name:</label><br>
+    <input type="text" id="name" name="name" required><br><br>
+    <label for="surname">Surname:</label><br>
+    <input type="text" id="surname" name="surname" required><br><br>
+    <label for="phone_number">Phone Number:</label><br>
+    <input type="text" id="phone_number" name="phone_number" required><br><br>
+    <label for="photo">Photo:</label><br>
+    <input type="file" id="photo" name="photo"><br><br>
+
+    <input type="submit" value="Register">
+</form>
+
+{% endblock content %}

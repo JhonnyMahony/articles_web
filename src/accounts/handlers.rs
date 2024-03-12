@@ -1,4 +1,5 @@
-use crate::accounts::forms::{AlertMessage, Claims, LoginForm, RegisterForm};
+use crate::accounts::forms::{AlertMessage, Claims, LoginForm, RegisterForm, FogotPasswordForm, ResetPasswordForm};
+use crate::accounts::schema::user_profiles;
 use actix_session::Session;
 use actix_web::{http, web, HttpResponse, Responder};
 use jsonwebtoken::{
@@ -69,7 +70,7 @@ pub async fn verify_account(token: web::Path<String>) -> impl Responder {
                     // Assuming you have a function `get_user_email` to fetch the user's email from the database
                     if let Ok(user_email) = get_user_email(user_id).await {
                         // Resend the verification email
-                        if let Err(e) = send_verification_email(&user_email, &user_id.to_string()) {
+                        if let Err(e) = send_verification_email(&user_email, &user_id.to_string(), "http://127.0.0.1:8000/verify") {
                             println!("Failed to resend verification email: {:?}", e);
                             return HttpResponse::InternalServerError()
                                 .body("Failed to resend verification email");
@@ -94,7 +95,7 @@ pub async fn verify_account(token: web::Path<String>) -> impl Responder {
     HttpResponse::Ok().body("Account verified")
 }
 
-fn send_verification_email(email: &str, user_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn send_verification_email(email: &str, user_id: &str, url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::hours(24))
         .expect("valid timestamp")
@@ -115,8 +116,7 @@ fn send_verification_email(email: &str, user_id: &str) -> Result<(), Box<dyn std
         .to(email.parse::<Mailbox>()?)
         .subject("Verify your account")
         .body(format!(
-            "Please click on the link to verify your account: http://127.0.0.1:8000/verify/{}",
-            token
+            "Please click on the link to verify your account: {}/{}",url,token
         ))?;
 
     let creds = Credentials::new(
@@ -172,10 +172,11 @@ pub async fn login_post(session: Session, form: web::Form<LoginForm>) -> impl Re
     let user_id = &results[0].id;
     let is_verifyde = &results[0].is_verified;
     println!("{}", is_verifyde);
-    if let Err(e) = session.insert("account_id", user_id) {
+    if let Err(e) = session.insert("account_id", &user_id) {
         // Handle the error, e.g., by logging or returning an error response
         println!("Failed to insert user_id into session: {:?}", e);
     }
+    println!("{}",&user_id);
     match verify(&form.password, &results[0].password) {
         Ok(is_password_correct) => {
             if is_password_correct {
@@ -268,7 +269,7 @@ pub async fn register_post(session: Session, form: web::Form<RegisterForm>) -> i
     let account = create_account(connection, &form.email, &form.password);
     create_user_profile(connection, &account);
     println!("\nSaved draft {} with id {}", email, account.id);
-    if let Err(e) = send_verification_email(&email, &account.id.to_string()) {
+    if let Err(e) = send_verification_email(&email, &account.id.to_string(), "http://127.0.0.1:8000/verify") {
         println!("Failed to send verification email: {}", e);
         return HttpResponse::InternalServerError().finish();
     }
@@ -285,7 +286,7 @@ pub async fn logout(session: Session) -> impl Responder {
 pub async fn dashboard_get(session: Session, tera: web::Data<Tera>) -> impl Responder {
     let mut context = Context::new();
 
-    let user_id: Option<String> = session.get("user_id").unwrap_or(None);
+    let user_id: Option<i32> = session.get("account_id").unwrap_or(None);
     match user_id {
         Some(id) => println!("{}", id),
         None => println!("User ID not found"),
@@ -343,20 +344,19 @@ pub async fn get_user_email(user_id: i32) -> Result<String, diesel::result::Erro
     result
 }
 
-pub async fn user_profile_create(session: Session, mut payload: Multipart) -> impl Responder {
+pub async fn change_profile_post(session: Session, mut payload: Multipart) -> impl Responder {
     let mut conn = establish_connection();
 
-    let account_id_result = session.get::<i32>("user_id");
-    let account_id: i32 = match account_id_result {
-        Ok(Some(id)) => id,
+    let account_id_result = session.get::<i32>("account_id");
+    let user_id: i32 = match account_id_result {
+        Ok(Some(user_id)) => user_id,
         Ok(None) => {
             return HttpResponse::Unauthorized().body("User is not logged in or session is expired")
         }
         Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
     };
-
     let mut user_profile = crate::accounts::schema::user_profiles::table
-        .filter(crate::accounts::schema::user_profiles::account_id.eq(account_id))
+        .find(user_id)
         .first::<UserProfile>(&mut conn)
         .expect("Error loading user profile");
 
@@ -402,8 +402,7 @@ pub async fn user_profile_create(session: Session, mut payload: Multipart) -> im
             _ => {}
         }
     }
-
-    let _ = diesel::update(crate::accounts::schema::user_profiles::table.find(user_profile.id))
+     let _ = diesel::update(crate::accounts::schema::user_profiles::table.find(user_id))
         .set(&user_profile)
         .execute(&mut conn)
         .expect("Error updating user profile");
@@ -413,9 +412,149 @@ pub async fn user_profile_create(session: Session, mut payload: Multipart) -> im
         .body("User profile created successfully!")
 }
 
+pub async fn change_profile_get(tera: web::Data<Tera>) -> impl Responder{
+    let mut context = Context::new();
+    let rendered = tera.render("accounts/change_profile.html", &context).unwrap();
+    actix_web::HttpResponse::Ok()
+        .content_type("text/html")
+        .body(rendered)
+    
+}
+
+pub async fn forgot_password_get(session: Session,tera: web::Data<Tera>) -> impl Responder{
+    let mut context = Context::new();
+    if let Some(alert_message) = session.get::<AlertMessage>("alert_message").unwrap() {
+        context.insert("alert_message", &alert_message);
+        session.remove("alert_message");
+    }
+    let rendered = tera.render("accounts/forgot_password.html", &context).unwrap();
+    actix_web::HttpResponse::Ok().content_type("text/html").body(rendered)
+}
+
+pub async fn forgot_password_post(session: Session, form: web::Form<FogotPasswordForm>) -> impl Responder{
+    
+    let email = &form.email;
+    let account_id_result = session.get::<i32>("account_id");
+    let account_id: i32 = match account_id_result {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return HttpResponse::Unauthorized().body("User is not logged in or session is expired")
+        }
+        Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
+    }; 
+    if let Err(e) = send_verification_email(&email, &account_id.to_string(), "http://127.0.0.1:8000/reset_password") {
+        println!("Failed to send verification email: {}", e);
+        return HttpResponse::InternalServerError().finish();
+    }
+    alert_message(session, "/forgot_password", "succes", "messege to reset password was sended to your email").await 
+     
+}
+
+    
+
+pub async fn reset_password_get(tera: web::Data<Tera>, token: web::Path<String>) -> impl Responder{
+    let mut context = Context::new();
+    let token = token.into_inner();
+    let secret = "verification"; // Use the same secret as when encoding
+    let token_data = match decode::<Claims>(
+        &token,
+        &DecodingKey::from_secret(secret.as_ref()),
+        &Validation::new(Algorithm::HS256),
+    ) {
+        Ok(c) => c,
+        Err(err) => match *err.kind() {
+            ErrorKind::ExpiredSignature => {
+                let mut validation = Validation::default();
+                validation.validate_exp = false; // Disable expiration validation
+                if let Ok(token_data) = decode::<Claims>(
+                    &token,
+                    &DecodingKey::from_secret(secret.as_ref()),
+                    &validation,
+                ) {
+                    let user_id: i32 = token_data.claims.sub.parse().expect("Invalid ID");
+
+                    // Assuming you have a function `get_user_email` to fetch the user's email from the database
+                    if let Ok(user_email) = get_user_email(user_id).await {
+                        // Resend the verification email
+                        if let Err(e) = send_verification_email(&user_email, &user_id.to_string(), "http://127.0.0.1:8000/reset_password") {
+                            println!("Failed to resend verification email: {:?}", e);
+                            return HttpResponse::InternalServerError()
+                                .body("Failed to resend verification email");
+                        }
+                    }
+                    return HttpResponse::Ok().body(
+                        "Verification link has expired. A new verification email has been sent.",
+                    );
+                } else {
+                    return HttpResponse::Unauthorized().body("Invalid token");
+                }
+            }
+            _ => return HttpResponse::Unauthorized().body("Invalid token"),
+        },
+    };
+    context.insert("token", &token);
+    let rendered = tera.render("accounts/reset_password.html", &context).unwrap();
+    actix_web::HttpResponse::Ok()
+        .content_type("text/html")
+        .body(rendered)
+}
+
+pub async fn reset_password_post(session: Session, form: web::Form<ResetPasswordForm>, token: web::Path<String>) -> impl Responder {
+    let token = token.into_inner();
+    let secret = "verification"; // Use the same secret as when encoding
+    let token_data = match decode::<Claims>(
+        &token,
+        &DecodingKey::from_secret(secret.as_ref()),
+        &Validation::new(Algorithm::HS256),
+    ) {
+        Ok(c) => c,
+        Err(err) => match *err.kind() {
+            ErrorKind::ExpiredSignature => {
+                let mut validation = Validation::default();
+                validation.validate_exp = false; // Disable expiration validation
+                if let Ok(token_data) = decode::<Claims>(
+                    &token,
+                    &DecodingKey::from_secret(secret.as_ref()),
+                    &validation,
+                ) {
+                    let user_id: i32 = token_data.claims.sub.parse().expect("Invalid ID");
+
+                    // Assuming you have a function `get_user_email` to fetch the user's email from the database
+                    if let Ok(user_email) = get_user_email(user_id).await {
+                        // Resend the verification email
+                        if let Err(e) = send_verification_email(&user_email, &user_id.to_string(), "http://127.0.0.1:8000/reset_password") {
+                            println!("Failed to resend verification email: {:?}", e);
+                            return HttpResponse::InternalServerError()
+                                .body("Failed to resend verification email");
+                        }
+                    }
+                    return HttpResponse::Ok().body(
+                        "Verification link has expired. A new verification email has been sent.",
+                    );
+                } else {
+                    return HttpResponse::Unauthorized().body("Invalid token");
+                }
+            }
+            _ => return HttpResponse::Unauthorized().body("Invalid token"),
+        },
+    };
+    if form.password != form.confirm_password{
+        return actix_web::HttpResponse::BadRequest().body("Passwords doesnt match");
+    }
+    let account_id: i32 = token_data.claims.sub.parse().expect("Invalid ID");
+    let hashed_password = hash(&form.password, DEFAULT_COST).expect("Failed to hash password");
+    use crate::accounts::schema::accounts::dsl::*;
+    let connection = &mut establish_connection();
+    let _ = diesel::update(accounts.find(account_id))
+        .set(password.eq(hashed_password))
+        .execute(&mut *connection); 
+    alert_message(session, "/login", "succes", "passworrd reseted").await
+     
+}
+
 pub async fn profile(session: Session, tera: web::Data<Tera>) -> impl Responder {
     let mut context = Context::new();
-    let account_id_result = session.get::<i32>("user_id");
+    let account_id_result = session.get::<i32>("account_id");
     let account_id: i32 = match account_id_result {
         Ok(Some(id)) => id,
         Ok(None) => {
