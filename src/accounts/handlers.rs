@@ -1,5 +1,6 @@
-use crate::accounts::forms::{AlertMessage, Claims, LoginForm, RegisterForm, FogotPasswordForm, ResetPasswordForm};
-use crate::accounts::schema::user_profiles;
+use crate::accounts::forms::{
+    AlertMessage, Claims, FogotPasswordForm, LoginForm, RegisterForm, ResetPasswordForm,
+};
 use actix_session::Session;
 use actix_web::{http, web, HttpResponse, Responder};
 use jsonwebtoken::{
@@ -46,10 +47,11 @@ fn account_exists(connection: &mut PgConnection, account_email: &str) -> bool {
 }
 
 pub async fn verify_account(token: web::Path<String>) -> impl Responder {
+    use crate::accounts::schema::accounts::dsl::*;
+    
     let connection = &mut establish_connection();
     let token = token.into_inner();
     let secret = "verification"; // Use the same secret as when encoding
-    use crate::accounts::schema::accounts::dsl::*;
     let token_data = match decode::<Claims>(
         &token,
         &DecodingKey::from_secret(secret.as_ref()),
@@ -70,7 +72,11 @@ pub async fn verify_account(token: web::Path<String>) -> impl Responder {
                     // Assuming you have a function `get_user_email` to fetch the user's email from the database
                     if let Ok(user_email) = get_user_email(user_id).await {
                         // Resend the verification email
-                        if let Err(e) = send_verification_email(&user_email, &user_id.to_string(), "http://127.0.0.1:8000/verify") {
+                        if let Err(e) = send_verification_email(
+                            &user_email,
+                            &user_id.to_string(),
+                            "http://127.0.0.1:8000/verify",
+                        ) {
                             println!("Failed to resend verification email: {:?}", e);
                             return HttpResponse::InternalServerError()
                                 .body("Failed to resend verification email");
@@ -95,7 +101,11 @@ pub async fn verify_account(token: web::Path<String>) -> impl Responder {
     HttpResponse::Ok().body("Account verified")
 }
 
-fn send_verification_email(email: &str, user_id: &str, url: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn send_verification_email(
+    email: &str,
+    user_id: &str,
+    url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::hours(24))
         .expect("valid timestamp")
@@ -116,7 +126,8 @@ fn send_verification_email(email: &str, user_id: &str, url: &str) -> Result<(), 
         .to(email.parse::<Mailbox>()?)
         .subject("Verify your account")
         .body(format!(
-            "Please click on the link to verify your account: {}/{}",url,token
+            "Please click on the link to verify your account: {}/{}",
+            url, token
         ))?;
 
     let creds = Credentials::new(
@@ -135,60 +146,38 @@ fn send_verification_email(email: &str, user_id: &str, url: &str) -> Result<(), 
 
 async fn submit_form(session: &Session, csrf_token: &str) -> bool {
     let form_csrf_token = csrf_token;
-    let session_csrf_token: Option<String> = session.get("csrf_token").expect("wrong csrf");
-
-    match session_csrf_token {
-        Some(token) if token == form_csrf_token => true,
-        _ => false,
+    match session.get::<String>("csrf_token") {
+        Ok(Some(token)) => token == form_csrf_token,
+        Ok(None) => false,
+        Err(_) => false,
     }
 }
 
 pub async fn login_post(session: Session, form: web::Form<LoginForm>) -> impl Responder {
     use crate::accounts::schema::accounts::dsl::*;
-    let connection = &mut establish_connection();
+    let conn = &mut establish_connection();
 
     let is_form_valid = submit_form(&session, &form.csrf_token).await;
     if !is_form_valid {
-        let alert_message = AlertMessage::new("error", "Csrf token uncorrect");
-        let _ = session.insert("alert_message", alert_message);
-        return HttpResponse::Found()
-            .append_header((http::header::LOCATION, "/login"))
-            .finish();
+        return alert_message(session, "/login", "error", "csrf token uncorrect").await;
     }
-    let results = accounts
+
+    let account = accounts
         .filter(email.eq(&form.email))
-        .limit(5)
-        .select(Account::as_select())
-        .load(connection)
+        .first::<Account>(conn)
         .expect("Error loading posts");
 
-    if results.is_empty() {
-        let alert_message = AlertMessage::new("error", "Account doesnt exist");
-        let _ = session.insert("alert_message", alert_message);
-        return HttpResponse::Found()
-            .append_header((http::header::LOCATION, "/login"))
-            .finish();
-    }
-    let user_id = &results[0].id;
-    let is_verifyde = &results[0].is_verified;
-    println!("{}", is_verifyde);
-    if let Err(e) = session.insert("account_id", &user_id) {
-        // Handle the error, e.g., by logging or returning an error response
-        println!("Failed to insert user_id into session: {:?}", e);
-    }
-    println!("{}",&user_id);
-    match verify(&form.password, &results[0].password) {
+    let user_id = &account.id;
+    let _ = session.insert("account_id", &user_id);
+
+    match verify(&form.password, &account.password) {
         Ok(is_password_correct) => {
             if is_password_correct {
                 return HttpResponse::Found()
                     .append_header((http::header::LOCATION, "/dashboard"))
                     .finish();
             } else {
-                let alert_message = AlertMessage::new("error", "incorrect password or email");
-                let _ = session.insert("alert_message", alert_message);
-                return HttpResponse::Found()
-                    .append_header((http::header::LOCATION, "/login"))
-                    .finish();
+                return alert_message(session, "/login", "error", "invalid password").await;
             }
         }
         Err(_) => {
@@ -200,10 +189,14 @@ pub async fn login_post(session: Session, form: web::Form<LoginForm>) -> impl Re
 
 pub async fn login_get(session: Session, tera: web::Data<Tera>) -> impl Responder {
     let mut context = Context::new();
-    if let Some(alert_message) = session.get::<AlertMessage>("alert_message").unwrap() {
-        context.insert("alert_message", &alert_message);
-        session.remove("alert_message");
-    }
+    match session.get::<AlertMessage>("alert_message") {
+        Ok(Some(alert_message)) => {
+            context.insert("alert_message", &alert_message);
+            session.remove("alert_message");
+        }
+        Ok(None) => println!("alert message not found"),
+        Err(_) => return HttpResponse::BadRequest().body("Error while getting alert message"),
+    };
     let csrf_token = Uuid::new_v4().to_string();
     let _ = session.insert("csrf_token", &csrf_token);
 
@@ -218,14 +211,21 @@ pub async fn login_get(session: Session, tera: web::Data<Tera>) -> impl Responde
 
 pub async fn register_get(session: Session, tera: web::Data<Tera>) -> impl Responder {
     let mut context = Context::new();
-    if let Some(alert_message) = session.get::<AlertMessage>("alert_message").unwrap() {
-        context.insert("alert_message", &alert_message);
-        session.remove("alert_message");
-    }
+    match session.get::<AlertMessage>("alert_message") {
+        Ok(Some(alert_message)) => {
+            context.insert("alert_message", &alert_message);
+            session.remove("alert_message");
+        }
+        Ok(None) => println!("alert message not found"),
+        Err(_) => return HttpResponse::BadRequest().body("Error while getting alert message"),
+    };
+
     let csrf_token = Uuid::new_v4().to_string();
     let _ = session.insert("csrf_token", &csrf_token);
+    
     context.insert("csrf_token", &csrf_token);
     context.insert("title", "you on regoster page");
+    
     let rendered = tera.render("accounts/register.html", &context).unwrap();
     actix_web::HttpResponse::Ok()
         .content_type("text/html")
@@ -234,6 +234,7 @@ pub async fn register_get(session: Session, tera: web::Data<Tera>) -> impl Respo
 
 pub async fn register_post(session: Session, form: web::Form<RegisterForm>) -> impl Responder {
     // Database conection
+    println!("{}", form.password_valid());
     let connection = &mut establish_connection();
     // Csrf validation
     let is_form_valid = submit_form(&session, &form.csrf_token).await;
@@ -261,7 +262,7 @@ pub async fn register_post(session: Session, form: web::Form<RegisterForm>) -> i
             "Password must be at least 8 characters long",
         )
         .await;
-    } else if form.password != form.confirm_password {
+    } else if !form.password_valid() {
         return alert_message(session, "/login", "error", "Password doesnt match").await;
     }
     // Account creating and verifying
@@ -269,7 +270,11 @@ pub async fn register_post(session: Session, form: web::Form<RegisterForm>) -> i
     let account = create_account(connection, &form.email, &form.password);
     create_user_profile(connection, &account);
     println!("\nSaved draft {} with id {}", email, account.id);
-    if let Err(e) = send_verification_email(&email, &account.id.to_string(), "http://127.0.0.1:8000/verify") {
+    if let Err(e) = send_verification_email(
+        &email,
+        &account.id.to_string(),
+        "http://127.0.0.1:8000/verify",
+    ) {
         println!("Failed to send verification email: {}", e);
         return HttpResponse::InternalServerError().finish();
     }
@@ -345,20 +350,24 @@ pub async fn get_user_email(user_id: i32) -> Result<String, diesel::result::Erro
 }
 
 pub async fn change_profile_post(session: Session, mut payload: Multipart) -> impl Responder {
+    use crate::accounts::schema::user_profiles::dsl::*;
     let mut conn = establish_connection();
-
-    let account_id_result = session.get::<i32>("account_id");
-    let user_id: i32 = match account_id_result {
-        Ok(Some(user_id)) => user_id,
+    
+    let user_id: i32 = match session.get::<i32>("account_id") {
+        Ok(Some(db_id)) => db_id,
         Ok(None) => {
             return HttpResponse::Unauthorized().body("User is not logged in or session is expired")
         }
         Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
     };
-    let mut user_profile = crate::accounts::schema::user_profiles::table
-        .find(user_id)
-        .first::<UserProfile>(&mut conn)
-        .expect("Error loading user profile");
+
+
+    let mut user_profile = match user_profiles
+                                    .filter(account_id.eq(user_id))
+                                    .first::<UserProfile>(&mut conn){
+        Ok(user_profile) => user_profile,
+        Err(_) => return HttpResponse::BadRequest().body("Error while getting user from datad base")
+    };
 
     // Iterate over multipart form data
     while let Ok(Some(mut field)) = payload.try_next().await {
@@ -402,57 +411,93 @@ pub async fn change_profile_post(session: Session, mut payload: Multipart) -> im
             _ => {}
         }
     }
-     let _ = diesel::update(crate::accounts::schema::user_profiles::table.find(user_id))
+    let _ = diesel::update(user_profiles.find(user_profile.id))
         .set(&user_profile)
-        .execute(&mut conn)
-        .expect("Error updating user profile");
+        .execute(&mut conn);
+    
 
-    HttpResponse::Ok()
-        .content_type("text/plain")
-        .body("User profile created successfully!")
+    return alert_message(session, "/change_profile", "success", "account updated successfully").await;
+     
 }
 
-pub async fn change_profile_get(tera: web::Data<Tera>) -> impl Responder{
+pub async fn change_profile_get(session: Session, tera: web::Data<Tera>) -> impl Responder {
+    use crate::accounts::schema::user_profiles::dsl::*;
     let mut context = Context::new();
-    let rendered = tera.render("accounts/change_profile.html", &context).unwrap();
+    match session.get::<AlertMessage>("alert_message") {
+        Ok(Some(alert_message)) => {
+            context.insert("alert_message", &alert_message);
+            session.remove("alert_message");
+        }
+        Ok(None) => println!("alert message not found"),
+        Err(_) => return HttpResponse::BadRequest().body("Error while getting alert message"),
+    };
+    let user_id = match session.get::<i32>("account_id"){
+        Ok(Some(db_id)) => db_id,
+        Ok(None) => return HttpResponse::BadRequest().body("User not found"),
+        Err(_) => return HttpResponse::BadRequest().body("Error while handling user_id")
+    };
+    let mut conn = establish_connection();
+    let user_profile = match user_profiles
+                                .filter(account_id.eq(user_id))
+                                .first::<UserProfile>(&mut conn){
+        Ok(user_profile) => user_profile,
+        Err(_) => return HttpResponse::BadRequest().body("error getting user profile")
+    };
+
+    context.insert("name", &user_profile.name);
+    context.insert("surname", &user_profile.surname);
+    context.insert("phone_number", &user_profile.phone_number);
+
+    let rendered = tera
+        .render("accounts/change_profile.html", &context)
+        .unwrap();
     actix_web::HttpResponse::Ok()
         .content_type("text/html")
         .body(rendered)
-    
 }
 
-pub async fn forgot_password_get(session: Session,tera: web::Data<Tera>) -> impl Responder{
+pub async fn forgot_password_get(session: Session, tera: web::Data<Tera>) -> impl Responder {
     let mut context = Context::new();
     if let Some(alert_message) = session.get::<AlertMessage>("alert_message").unwrap() {
         context.insert("alert_message", &alert_message);
         session.remove("alert_message");
     }
     let rendered = tera.render("accounts/forgot_password.html", &context).unwrap();
-    actix_web::HttpResponse::Ok().content_type("text/html").body(rendered)
+    actix_web::HttpResponse::Ok()
+        .content_type("text/html")
+        .body(rendered)
 }
 
-pub async fn forgot_password_post(session: Session, form: web::Form<FogotPasswordForm>) -> impl Responder{
-    
+pub async fn forgot_password_post(
+    session: Session,
+    form: web::Form<FogotPasswordForm>,
+) -> impl Responder {
     let email = &form.email;
-    let account_id_result = session.get::<i32>("account_id");
-    let account_id: i32 = match account_id_result {
+    let account_id: i32 = match session.get::<i32>("account_id") {
         Ok(Some(id)) => id,
         Ok(None) => {
             return HttpResponse::Unauthorized().body("User is not logged in or session is expired")
         }
         Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
-    }; 
-    if let Err(e) = send_verification_email(&email, &account_id.to_string(), "http://127.0.0.1:8000/reset_password") {
+    };
+    if let Err(e) = send_verification_email(
+        &email,
+        &account_id.to_string(),
+        "http://127.0.0.1:8000/reset_password",
+    ) {
         println!("Failed to send verification email: {}", e);
         return HttpResponse::InternalServerError().finish();
     }
-    alert_message(session, "/forgot_password", "succes", "messege to reset password was sended to your email").await 
-     
+    alert_message(
+        session,
+        "/forgot_password",
+        "succes",
+        "messege to reset password was sended to your email",
+    )
+    .await
 }
 
-    
-
-pub async fn reset_password_get(tera: web::Data<Tera>, token: web::Path<String>) -> impl Responder{
+pub async fn reset_password_get(tera: web::Data<Tera>, token: web::Path<String>) -> impl Responder {
     let mut context = Context::new();
     let token = token.into_inner();
     let secret = "verification"; // Use the same secret as when encoding
@@ -476,7 +521,11 @@ pub async fn reset_password_get(tera: web::Data<Tera>, token: web::Path<String>)
                     // Assuming you have a function `get_user_email` to fetch the user's email from the database
                     if let Ok(user_email) = get_user_email(user_id).await {
                         // Resend the verification email
-                        if let Err(e) = send_verification_email(&user_email, &user_id.to_string(), "http://127.0.0.1:8000/reset_password") {
+                        if let Err(e) = send_verification_email(
+                            &user_email,
+                            &user_id.to_string(),
+                            "http://127.0.0.1:8000/reset_password",
+                        ) {
                             println!("Failed to resend verification email: {:?}", e);
                             return HttpResponse::InternalServerError()
                                 .body("Failed to resend verification email");
@@ -493,13 +542,19 @@ pub async fn reset_password_get(tera: web::Data<Tera>, token: web::Path<String>)
         },
     };
     context.insert("token", &token);
-    let rendered = tera.render("accounts/reset_password.html", &context).unwrap();
+    let rendered = tera
+        .render("accounts/reset_password.html", &context)
+        .unwrap();
     actix_web::HttpResponse::Ok()
         .content_type("text/html")
         .body(rendered)
 }
 
-pub async fn reset_password_post(session: Session, form: web::Form<ResetPasswordForm>, token: web::Path<String>) -> impl Responder {
+pub async fn reset_password_post(
+    session: Session,
+    form: web::Form<ResetPasswordForm>,
+    token: web::Path<String>,
+) -> impl Responder {
     let token = token.into_inner();
     let secret = "verification"; // Use the same secret as when encoding
     let token_data = match decode::<Claims>(
@@ -522,7 +577,11 @@ pub async fn reset_password_post(session: Session, form: web::Form<ResetPassword
                     // Assuming you have a function `get_user_email` to fetch the user's email from the database
                     if let Ok(user_email) = get_user_email(user_id).await {
                         // Resend the verification email
-                        if let Err(e) = send_verification_email(&user_email, &user_id.to_string(), "http://127.0.0.1:8000/reset_password") {
+                        if let Err(e) = send_verification_email(
+                            &user_email,
+                            &user_id.to_string(),
+                            "http://127.0.0.1:8000/reset_password",
+                        ) {
                             println!("Failed to resend verification email: {:?}", e);
                             return HttpResponse::InternalServerError()
                                 .body("Failed to resend verification email");
@@ -538,7 +597,7 @@ pub async fn reset_password_post(session: Session, form: web::Form<ResetPassword
             _ => return HttpResponse::Unauthorized().body("Invalid token"),
         },
     };
-    if form.password != form.confirm_password{
+    if form.password != form.confirm_password {
         return actix_web::HttpResponse::BadRequest().body("Passwords doesnt match");
     }
     let account_id: i32 = token_data.claims.sub.parse().expect("Invalid ID");
@@ -547,26 +606,28 @@ pub async fn reset_password_post(session: Session, form: web::Form<ResetPassword
     let connection = &mut establish_connection();
     let _ = diesel::update(accounts.find(account_id))
         .set(password.eq(hashed_password))
-        .execute(&mut *connection); 
+        .execute(&mut *connection);
     alert_message(session, "/login", "succes", "passworrd reseted").await
-     
 }
 
 pub async fn profile(session: Session, tera: web::Data<Tera>) -> impl Responder {
+    use crate::accounts::schema::user_profiles::dsl::*;
+
     let mut context = Context::new();
-    let account_id_result = session.get::<i32>("account_id");
-    let account_id: i32 = match account_id_result {
-        Ok(Some(id)) => id,
+    let user_id: i32 = match session.get::<i32>("account_id") { 
+        Ok(Some(db_id)) => db_id,
         Ok(None) => {
-            return HttpResponse::Unauthorized().body("User is not logged in or session is expired")
+            return HttpResponse::BadRequest().body("user is not logged in or session is expired")
         }
-        Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
+        Err(_) => return HttpResponse::BadRequest().body("internal server error"),
     };
     let mut conn = establish_connection();
-    let user_profile = crate::accounts::schema::user_profiles::table
-        .filter(crate::accounts::schema::user_profiles::account_id.eq(account_id))
+
+    let user_profile =  user_profiles
+        .filter(account_id.eq(user_id))
         .first::<UserProfile>(&mut conn)
         .expect("Error loading user profile");
+
     context.insert("name", &user_profile.name);
     context.insert("surname", &user_profile.surname);
     context.insert("phone_number", &user_profile.phone_number);

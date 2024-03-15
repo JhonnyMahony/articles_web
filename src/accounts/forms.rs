@@ -15,6 +15,12 @@ pub struct RegisterForm{
     pub csrf_token: String,
 }
 
+impl RegisterForm {
+    pub fn password_valid(&self) -> bool {
+       self.password == self.confirm_password 
+    }
+}
+
 #[derive(Deserialize)]
 pub struct FogotPasswordForm{
     pub email: String,
