@@ -12,6 +12,13 @@ use diesel::r2d2::{self, ConnectionManager};
 mod accounts;
 mod admin;
 
+pub type Pool = r2d2::Pool<ConnectionManager<PgConnection>>;
+
+pub fn init_pool(database_url: &str) -> Pool {
+    let manager = ConnectionManager::<PgConnection>::new(database_url);
+    r2d2::Pool::builder().build(manager).expect("Failed to create pool.")
+}
+
 pub fn establish_connection() -> PgConnection {
     dotenv().ok();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -45,11 +52,12 @@ async fn home(session: Session,tera: web::Data<Tera>) -> impl Responder {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    
-    let tera = match Tera::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/**/*")){
-        Ok(tera) => tera,
-        Err(_) => panic!("Error templating")
-    };
+
+    dotenv().ok(); // Load .env file if available
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let pool = init_pool(&database_url); // Initialize the connection pool
+ 
+    let tera = Tera::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/**/*")).unwrap();
 
     println!("Server 127.0.0.1:8000");
     HttpServer::new(move || {
@@ -58,8 +66,10 @@ async fn main() -> std::io::Result<()> {
                     .secure(false) // Set to true in production over HTTPS
                     .same_site(SameSite::Strict)
                     .max_age(24 * 60 * 60),)
+            .app_data(web::Data::new(pool.clone()))
             .app_data(web::Data::new(tera.clone()))
             .route("/", web::get().to(home))
+            .configure(admin::routes::config)
             .configure(accounts::routes::config)
             .service(files::Files::new("/static", "static").show_files_listing())
             .service(files::Files::new("/media", "media").show_files_listing())
@@ -68,3 +78,4 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await 
 }
+

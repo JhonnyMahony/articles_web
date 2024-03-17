@@ -17,7 +17,7 @@ tera = "1"
 diesel = { version = "2.1.0", features = ["postgres","r2d2", "chrono"] }
 dotenv = "0.15.0"
 r2d2 = "0.8.9"
-chrono = "^0"
+chrono = { version = "^0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 bcrypt = "0.10.0"
 uuid = { version = "0.8", features = ["v4"]}

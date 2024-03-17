@@ -1,7 +1,8 @@
 use crate::accounts::models::Account;
 use crate::accounts::schema::accounts;
+use crate::accounts::schema::user_profiles;
 use crate::Pool;
-use actix_web::{web, HttpResponse, Responder, http};
+use actix_web::{web, HttpResponse, Responder};
 use diesel::{query_dsl::methods::FilterDsl, ExpressionMethods, RunQueryDsl};
 use tera::{Context, Tera};
 
@@ -60,26 +61,17 @@ pub async fn item_detail_get(id: web::Path<i32>, pool: web::Data<Pool>, tera: we
     HttpResponse::Ok().content_type("text/html").body(rendered)
 }
 
-pub async fn item_delete(pool: web::Data<Pool>, id: web::Path<i32>) -> impl Responder {
-    let id = id.into_inner();
+pub async fn item_delete(pool: web::Data<Pool>, tera: web::Data<Tera>, id: web::Path<i32>) -> impl Responder {
+    let context = Context::new();
     let mut db_conn = match pool.get() {
         Ok(conn) => conn,
         Err(_) => return HttpResponse::BadRequest().body("cant get data")
     };
     
-    match diesel::delete(accounts::dsl::accounts.filter(accounts::dsl::id.eq(id))).execute(&mut db_conn){
-        Ok(conn) => conn,
-        Err(_) => return HttpResponse::BadRequest().body("cant delete item")
-    };
-    return HttpResponse::Found()
-        .append_header((http::header::LOCATION, "/model_detail"))
-        .finish();
+    match diesel::delete(accounts::ds)
+
     
 }
-
-
-
-
 
 
 

@@ -21,7 +21,7 @@ use futures::{StreamExt, TryStreamExt};
 use sanitize_filename;
 use std::io::Write;
 use validator::validate_email;
-
+use crate::Pool;
 async fn alert_message(
     session: Session,
     location: &str,
@@ -153,9 +153,12 @@ async fn submit_form(session: &Session, csrf_token: &str) -> bool {
     }
 }
 
-pub async fn login_post(session: Session, form: web::Form<LoginForm>) -> impl Responder {
+pub async fn login_post(pool: web::Data<Pool>, session: Session, form: web::Form<LoginForm>) -> impl Responder {
     use crate::accounts::schema::accounts::dsl::*;
-    let conn = &mut establish_connection();
+    let mut db_conn = match pool.get(){
+        Ok(conn) => conn,
+        Err(_) => return HttpResponse::BadRequest().body("Cant conect to data base")
+    };
 
     let is_form_valid = submit_form(&session, &form.csrf_token).await;
     if !is_form_valid {
@@ -164,7 +167,7 @@ pub async fn login_post(session: Session, form: web::Form<LoginForm>) -> impl Re
 
     let account = accounts
         .filter(email.eq(&form.email))
-        .first::<Account>(conn)
+        .first::<Account>(&mut db_conn)
         .expect("Error loading posts");
 
     let user_id = &account.id;
@@ -232,10 +235,13 @@ pub async fn register_get(session: Session, tera: web::Data<Tera>) -> impl Respo
         .body(rendered)
 }
 
-pub async fn register_post(session: Session, form: web::Form<RegisterForm>) -> impl Responder {
+pub async fn register_post(pool: web::Data<Pool>,session: Session, form: web::Form<RegisterForm>) -> impl Responder {
     // Database conection
     println!("{}", form.password_valid());
-    let connection = &mut establish_connection();
+    let mut db_conn = match pool.get(){
+        Ok(conn) => conn,
+        Err(_) => return HttpResponse::BadRequest().body("Cant conect to data base")
+    };
     // Csrf validation
     let is_form_valid = submit_form(&session, &form.csrf_token).await;
     if !is_form_valid {
@@ -244,7 +250,7 @@ pub async fn register_post(session: Session, form: web::Form<RegisterForm>) -> i
     // Form validation
     if !validate_email(&form.email) {
         return alert_message(session, "/register", "error", "Invalid format of  email").await;
-    } else if account_exists(connection, &form.email) {
+    } else if account_exists(&mut db_conn, &form.email) {
         return alert_message(session, "/register", "error", "Account exist").await;
     } else if form.password.to_lowercase() == form.password {
         return alert_message(
@@ -267,8 +273,8 @@ pub async fn register_post(session: Session, form: web::Form<RegisterForm>) -> i
     }
     // Account creating and verifying
     let email = &form.email;
-    let account = create_account(connection, &form.email, &form.password);
-    create_user_profile(connection, &account);
+    let account = create_account(&mut db_conn, &form.email, &form.password);
+    create_user_profile(&mut db_conn, &account);
     println!("\nSaved draft {} with id {}", email, account.id);
     if let Err(e) = send_verification_email(
         &email,
@@ -349,9 +355,12 @@ pub async fn get_user_email(user_id: i32) -> Result<String, diesel::result::Erro
     result
 }
 
-pub async fn change_profile_post(session: Session, mut payload: Multipart) -> impl Responder {
+pub async fn change_profile_post(pool: web::Data<Pool>,session: Session, mut payload: Multipart) -> impl Responder {
     use crate::accounts::schema::user_profiles::dsl::*;
-    let mut conn = establish_connection();
+    let mut db_conn = match pool.get(){
+        Ok(conn) => conn,
+        Err(_) => return HttpResponse::BadRequest().body("Cant conect to data base")
+    };
     
     let user_id: i32 = match session.get::<i32>("account_id") {
         Ok(Some(db_id)) => db_id,
@@ -364,7 +373,7 @@ pub async fn change_profile_post(session: Session, mut payload: Multipart) -> im
 
     let mut user_profile = match user_profiles
                                     .filter(account_id.eq(user_id))
-                                    .first::<UserProfile>(&mut conn){
+                                    .first::<UserProfile>(&mut db_conn){
         Ok(user_profile) => user_profile,
         Err(_) => return HttpResponse::BadRequest().body("Error while getting user from datad base")
     };
@@ -413,15 +422,19 @@ pub async fn change_profile_post(session: Session, mut payload: Multipart) -> im
     }
     let _ = diesel::update(user_profiles.find(user_profile.id))
         .set(&user_profile)
-        .execute(&mut conn);
+        .execute(&mut db_conn);
     
 
     return alert_message(session, "/change_profile", "success", "account updated successfully").await;
      
 }
 
-pub async fn change_profile_get(session: Session, tera: web::Data<Tera>) -> impl Responder {
+pub async fn change_profile_get(pool: web::Data<Pool>, session: Session, tera: web::Data<Tera>) -> impl Responder {
     use crate::accounts::schema::user_profiles::dsl::*;
+    let mut db_conn = match pool.get(){
+        Ok(conn) => conn,
+        Err(_) => return HttpResponse::BadRequest().body("Cant conect to data base")
+    };
     let mut context = Context::new();
     match session.get::<AlertMessage>("alert_message") {
         Ok(Some(alert_message)) => {
@@ -436,10 +449,9 @@ pub async fn change_profile_get(session: Session, tera: web::Data<Tera>) -> impl
         Ok(None) => return HttpResponse::BadRequest().body("User not found"),
         Err(_) => return HttpResponse::BadRequest().body("Error while handling user_id")
     };
-    let mut conn = establish_connection();
     let user_profile = match user_profiles
                                 .filter(account_id.eq(user_id))
-                                .first::<UserProfile>(&mut conn){
+                                .first::<UserProfile>(&mut db_conn){
         Ok(user_profile) => user_profile,
         Err(_) => return HttpResponse::BadRequest().body("error getting user profile")
     };
@@ -554,7 +566,14 @@ pub async fn reset_password_post(
     session: Session,
     form: web::Form<ResetPasswordForm>,
     token: web::Path<String>,
+    pool: web::Data<Pool>,
 ) -> impl Responder {
+    
+    let mut db_conn = match pool.get(){
+        Ok(conn) => conn,
+        Err(_) => return HttpResponse::BadRequest().body("Cant conect to data base")
+    };
+
     let token = token.into_inner();
     let secret = "verification"; // Use the same secret as when encoding
     let token_data = match decode::<Claims>(
@@ -603,15 +622,19 @@ pub async fn reset_password_post(
     let account_id: i32 = token_data.claims.sub.parse().expect("Invalid ID");
     let hashed_password = hash(&form.password, DEFAULT_COST).expect("Failed to hash password");
     use crate::accounts::schema::accounts::dsl::*;
-    let connection = &mut establish_connection();
     let _ = diesel::update(accounts.find(account_id))
         .set(password.eq(hashed_password))
-        .execute(&mut *connection);
+        .execute(&mut db_conn);
     alert_message(session, "/login", "succes", "passworrd reseted").await
 }
 
-pub async fn profile(session: Session, tera: web::Data<Tera>) -> impl Responder {
+pub async fn profile(pool: web::Data<Pool>, session: Session, tera: web::Data<Tera>) -> impl Responder {
     use crate::accounts::schema::user_profiles::dsl::*;
+
+    let mut db_conn = match pool.get(){
+        Ok(conn) => conn,
+        Err(_) => return HttpResponse::BadRequest().body("Cant conect to data base")
+    };
 
     let mut context = Context::new();
     let user_id: i32 = match session.get::<i32>("account_id") { 
@@ -621,11 +644,10 @@ pub async fn profile(session: Session, tera: web::Data<Tera>) -> impl Responder 
         }
         Err(_) => return HttpResponse::BadRequest().body("internal server error"),
     };
-    let mut conn = establish_connection();
 
     let user_profile =  user_profiles
         .filter(account_id.eq(user_id))
-        .first::<UserProfile>(&mut conn)
+        .first::<UserProfile>(&mut db_conn)
         .expect("Error loading user profile");
 
     context.insert("name", &user_profile.name);

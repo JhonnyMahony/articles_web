@@ -1,0 +1,6 @@
+<h1>{{ title }}<h1>
+{% for account in accounts %}
+  
+<a href="item_detail/{{account.id}}"> email: {{ account.email }} </a><a> date of creation: {{ account.created_at }} </a> <a> is verified: {{ account.is_verified }} </a> <br> 
+
+{% endfor %}
